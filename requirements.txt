@@ -1,1 +1,1 @@
-python-telegram-bot[persistence]==21.2
+python-telegram-bot==20.6
