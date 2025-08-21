@@ -30,7 +30,7 @@ def build_keyboard(bid: str, state: Dict[str, Any]):
     bc = state["broadcasts"].get(bid)
     if not bc or bc.get("expired", False): return None
     if not bc.get("claimed_by"):
-        return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять", callback_data=f"claim:{bid}")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взddять", callback_data=f"claim:{bid}")]])
     return InlineKeyboardMarkup([[InlineKeyboardButton("♻️ Снять", callback_data=f"unclaim:{bid}")]])
 
 def human_name(u) -> str:
