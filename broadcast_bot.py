@@ -1,188 +1,358 @@
-import os, json, re, uuid
+import asyncio
+import json
+import logging
+import os
+import re
+import string
+import random
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, constants
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.types import Message, CallbackQuery
+from aiogram.filters import Command
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+# ===============================
+# Настройки и инициализация
+# ===============================
+
+logging.basicConfig(level=logging.INFO)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+DEFAULT_TTL_MIN = int(os.getenv("DEFAULT_TTL_MIN", "30"))
 STATE_FILE = os.getenv("STATE_FILE", "state.json")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_IDS = set(int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x)
-DEFAULT_TTL_MIN = int(os.getenv("DEFAULT_TTL_MIN", "15"))
 
-def load_state() -> Dict[str, Any]:
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is required!")
+
+bot = Bot(BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher()
+router = Router()
+dp.include_router(router)
+
+# ===============================
+# Хранение состояния
+# ===============================
+
+def load_state():
     if not os.path.exists(STATE_FILE):
-        return {"admins": list(ADMIN_IDS), "chats": [], "broadcasts": {}}
+        return {"admins": ADMIN_IDS, "chats": [], "broadcasts": []}
     with open(STATE_FILE, "r", encoding="utf-8") as f:
-        try: data = json.load(f)
-        except Exception: data = {"admins": list(ADMIN_IDS), "chats": [], "broadcasts": {}}
-    data["admins"] = list(set(data.get("admins", [])) | ADMIN_IDS)
-    data.setdefault("chats", []); data.setdefault("broadcasts", {})
-    return data
+        return json.load(f)
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state():
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def is_admin(uid: int, state: Dict[str, Any]) -> bool: return uid in set(state.get("admins", []))
-def short_id(bid: str) -> str: return bid.split("-")[0]
+state = load_state()
+admins = set(state.get("admins", []))
 
-def build_keyboard(bid: str, state: Dict[str, Any]):
-    bc = state["broadcasts"].get(bid)
-    if not bc or bc.get("expired", False): return None
-    if not bc.get("claimed_by"):
-        return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять", callback_data=f"claim:{bid}")]])
-    return InlineKeyboardMarkup([[InlineKeyboardButton("♻️ Снять", callback_data=f"unclaim:{bid}")]])
+# ===============================
+# Утилиты
+# ===============================
 
-def human_name(u) -> str:
-    parts = [p for p in [u.first_name, u.last_name] if p]
-    base = " ".join(parts) if parts else (u.username or f"id:{u.id}")
-    return f"{base} (@{u.username})" if u.username else base
+def gen_id():
+    return "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
-def fmt_deadline(created_at_iso: str, ttl_min: int) -> str:
-    created_dt = datetime.fromisoformat(created_at_iso)
-    return (created_dt + timedelta(minutes=ttl_min)).strftime("%Y-%m-%d %H:%M")
-
-def render_message(bid: str, state: Dict[str, Any]) -> str:
-    bc = state["broadcasts"][bid]
-    status = "🔴 Статус: истёк срок" if bc.get("expired") else ("🟡 Статус: взята — " + bc["claimed_by"]["name"] if bc.get("claimed_by") else "🟢 Статус: свободна")
-    deadline = fmt_deadline(bc["created_at"], bc["ttl_min"])
-    return f"📣 <b>Заявка #{short_id(bid)}</b>\n{bc['text']}\n\n⏳ Актуально до: <b>{deadline}</b> (≈{bc['ttl_min']} мин)\n{status}"
-
-def parse_broadcast_args(raw: str):
-    raw = raw.strip()
-    m = re.match(r"^\s*(ttl\s*=\s*|\s*)(?P<num>\d{1,3})\s*(m|min|мин)?\s*(?P<rest>.*)$", raw, flags=re.IGNORECASE)
-    ttl = None
-    if m and m.group("num") and m.group("rest"):
-        try:
-            x = int(m.group("num"))
-            if 1 <= x <= 180: ttl = x
-            raw = m.group("rest").strip()
-        except: pass
-    return (ttl or DEFAULT_TTL_MIN), raw
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state(); role = "админ" if is_admin(update.effective_user.id, state) else "пользователь"
-    await update.message.reply_text(
-        "Привет! Я бот для широковещательных заявок партнёрам.\n\n"
-        "Команды:\n"
-        "/register — зарегистрировать текущий чат как целевой\n"
-        "/unregister — убрать текущий чат\n"
-        "/list — показать все чаты\n"
-        "/broadcast <TTL мин> <текст> — разослать заявку (только админы)\n"
-        "/help — справка\n\n"
-        f"Ваш статус: {role}",
-        parse_mode=constants.ParseMode.HTML
-    )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE): await start(update, context)
-
-async def register_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state()
-    if not is_admin(update.effective_user.id, state): await update.message.reply_text("Только админы могут регистрировать чаты."); return
-    cid = update.effective_chat.id
-    if cid not in state["chats"]:
-        state["chats"].append(cid); save_state(state)
-        await update.message.reply_text(f"Чат зарегистрирован: {update.effective_chat.title or cid}")
-    else: await update.message.reply_text("Чат уже в списке.")
-
-async def unregister_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state()
-    if not is_admin(update.effective_user.id, state): await update.message.reply_text("Только админы могут убирать чаты."); return
-    cid = update.effective_chat.id
-    if cid in state["chats"]:
-        state["chats"].remove(cid); save_state(state)
-        await update.message.reply_text(f"Чат удалён: {update.effective_chat.title or cid}")
-    else: await update.message.reply_text("Этого чата нет в списке.")
-
-async def list_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state()
-    lines = [f"• {cid}" for cid in state["chats"]] or ["(пусто)"]
-    await update.message.reply_text("Целевые чаты:\n" + "\n".join(lines))
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state()
-    if not is_admin(update.effective_user.id, state): await update.message.reply_text("Только админы могут рассылать заявки."); return
-    if not state["chats"]: await update.message.reply_text("Нет зарегистрированных чатов. Добавьте бота в группы и отправьте /register."); return
-    raw = re.sub(r"^/broadcast(@\w+)?\s*", "", update.message.text or "", flags=re.IGNORECASE)
-    ttl_min, text = parse_broadcast_args(raw)
-    if not text: await update.message.reply_text("Формат: /broadcast <TTL мин> <текст>\nНапр.: /broadcast 12m Продаём дирхамы, Сбер, 150к."); return
-    bid = str(uuid.uuid4())
-    created_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
-    state["broadcasts"][bid] = {"text": text, "created_at": created_at, "ttl_min": ttl_min, "messages": [], "claimed_by": None, "expired": False}
-    save_state(state)
-    ok = fail = 0
-    for cid in list(state["chats"]):
-        try:
-            msg = await context.bot.send_message(chat_id=cid, text=render_message(bid, state),
-                                                 reply_markup=build_keyboard(bid, state),
-                                                 parse_mode=constants.ParseMode.HTML,
-                                                 disable_web_page_preview=True)
-            state["broadcasts"][bid]["messages"].append({"chat_id": cid, "message_id": msg.message_id}); ok += 1
-        except Exception: fail += 1
-    save_state(state)
-    await schedule_expiration(context, bid, ttl_min)
-    await update.message.reply_text(f"Рассылка завершена. Успешно: {ok}, ошибки: {fail}. Заявка #{short_id(bid)} (TTL {ttl_min} мин).")
-
-async def schedule_expiration(context: ContextTypes.DEFAULT_TYPE, bid: str, ttl_min: int):
-    context.job_queue.run_once(expire_job, when=timedelta(minutes=ttl_min), data={"bid": bid}, name=f"expire:{bid}")
-
-async def expire_job(ctx: ContextTypes.DEFAULT_TYPE):
-    bid = ctx.job.data["bid"]
-    state = load_state(); bc = state["broadcasts"].get(bid)
-    if not bc or bc.get("expired"): return
-    bc["expired"] = True; save_state(state)
-    for msg in bc.get("messages", []):
-        try:
-            await ctx.bot.edit_message_text(chat_id=msg["chat_id"], message_id=msg["message_id"],
-                                            text=render_message(bid, state),
-                                            parse_mode=constants.ParseMode.HTML,
-                                            disable_web_page_preview=True)
-        except Exception: pass
-
-async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state(); q = update.callback_query; await q.answer()
-    m = re.match(r"^(claim|unclaim):(.+)$", q.data or "")
-    if not m: return
-    action, bid = m.group(1), m.group(2)
-    bc = state["broadcasts"].get(bid)
-    if not bc: await q.answer("Заявка не найдена.", show_alert=True); return
-    if bc.get("expired"): await q.answer("Срок заявки истёк.", show_alert=True); return
-    user = q.from_user
-    if action == "claim":
-        if bc.get("claimed_by"): await q.answer("Уже взяли."); return
-        bc["claimed_by"] = {"id": user.id, "name": human_name(user), "username": user.username,
-                            "ts": datetime.now().isoformat(timespec="seconds")}
+def parse_ttl(text: str):
+    m = re.search(r"(\d+)\s*(m|min|мин|minute|minutes|h|ч|hour|hours)?", text, re.I)
+    if not m:
+        return DEFAULT_TTL_MIN
+    num = int(m.group(1))
+    unit = m.group(2) or "m"
+    if unit.lower().startswith(("h", "ч")):
+        ttl = num * 60
     else:
-        claimer = bc.get("claimed_by")
-        if not claimer: await q.answer("Уже свободна."); return
-        if user.id != claimer.get("id") and not is_admin(user.id, state):
-            await q.answer("Снять может только исполнитель или админ.", show_alert=True); return
-        bc["claimed_by"] = None
-    save_state(state)
-    kb = build_keyboard(bid, state)
-    for msg in bc.get("messages", []):
+        ttl = num
+    return max(1, min(ttl, 180))
+
+def render_message(b: dict, tz_offset: int = 0):
+    expire_time = datetime.fromisoformat(b["expire_at"]).astimezone(timezone(timedelta(hours=tz_offset)))
+    expire_str = expire_time.strftime("%Y-%m-%d %H:%M")
+    status = "свободна"
+    if b.get("executor"):
+        status = f"взята — {b['executor']}"
+    if b.get("expired"):
+        status = "истёк срок"
+    if b.get("done"):
+        status = f"исполнена — {b['executor']}"
+    return (f"<b>Заявка #{b['id']}</b>\n"
+            f"{b['text']}\n\n"
+            f"Актуально до: {expire_str} (≈{b['ttl']} мин)\n"
+            f"Статус: {status}")
+
+def build_keyboard(b: dict):
+    kb = InlineKeyboardBuilder()
+    if not b.get("executor") and not b.get("expired"):
+        kb.button(text="✅ Взять", callback_data=f"take_{b['id']}")
+    elif b.get("executor") and not b.get("expired") and not b.get("done"):
+        kb.button(text="♻️ Снять", callback_data=f"drop_{b['id']}")
+        kb.button(text="✔️ Исполнено", callback_data=f"done_{b['id']}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+async def update_broadcast_messages(b: dict):
+    for chat_id, msg_id in b["messages"]:
         try:
-            await context.bot.edit_message_text(chat_id=msg["chat_id"], message_id=msg["message_id"],
-                                                text=render_message(bid, state), reply_markup=kb,
-                                                parse_mode=constants.ParseMode.HTML,
-                                                disable_web_page_preview=True)
-        except Exception: pass
+            await bot.edit_message_text(
+                render_message(b),
+                chat_id=chat_id,
+                message_id=msg_id,
+                reply_markup=build_keyboard(b)
+            )
+        except Exception as e:
+            logging.warning(f"Failed to update message {msg_id} in chat {chat_id}: {e}")
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Неизвестная команда. Наберите /help.")
+async def expire_broadcast(b: dict):
+    await asyncio.sleep(b["ttl"] * 60)
+    b["expired"] = True
+    save_state()
+    await update_broadcast_messages(b)
 
-def main():
-    if not BOT_TOKEN: print("ERROR: BOT_TOKEN is not set."); return
-    app: Application = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler(["start","help"], start))
-    app.add_handler(CommandHandler("register", register_chat))
-    app.add_handler(CommandHandler("unregister", unregister_chat))
-    app.add_handler(CommandHandler("list", list_chats))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
-    print("Bot is running...")
-    app.run_polling()
+async def broadcast(text: str, ttl_min: int):
+    if not state["chats"]:
+        return
+    bid = gen_id()
+    expire_at = (datetime.utcnow() + timedelta(minutes=ttl_min)).isoformat()
+    b = {
+        "id": bid,
+        "text": text,
+        "ttl": ttl_min,
+        "created_at": datetime.utcnow().isoformat(),
+        "expire_at": expire_at,
+        "messages": [],
+        "executor": None,
+        "expired": False,
+        "done": False
+    }
+    errors = 0
+    for chat_id in state["chats"]:
+        try:
+            m = await bot.send_message(chat_id, render_message(b), reply_markup=build_keyboard(b))
+            b["messages"].append((chat_id, m.message_id))
+        except Exception as e:
+            logging.error(f"Broadcast error {chat_id}: {e}")
+            errors += 1
+    state["broadcasts"].append(b)
+    save_state()
+    asyncio.create_task(expire_broadcast(b))
+    return f"Успешно: {len(b['messages'])}, ошибки: {errors}. Заявка #{bid} (TTL {ttl_min} мин)"
+
+# ===============================
+# FSM для /new
+# ===============================
+
+class NewRequest(StatesGroup):
+    direction = State()
+    bank = State()
+    ttl = State()
+
+@router.message(Command("new"))
+async def cmd_new(message: Message, state: FSMContext):
+    if message.from_user.id not in admins:
+        return await message.answer("⛔ Только админ может создавать заявки.")
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="RUB→USDT | Сбер | 20 мин", callback_data="tpl_rub_usdt_sber_20")
+    kb.button(text="USDT→RUB | Тинькофф | 1 час", callback_data="tpl_usdt_rub_tink_60")
+    kb.button(text="RUB→USDT | Альфа | день", callback_data="tpl_rub_usdt_alfa_day")
+    kb.button(text="Собрать вручную ➡️", callback_data="manual_start")
+    kb.adjust(1)
+
+    await message.answer("Выберите шаблон или соберите заявку вручную:", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data.startswith("tpl_"))
+async def cb_template(call: CallbackQuery):
+    _, d1, d2, bank, ttl_raw = call.data.split("_")
+    direction = f"{d1.upper()}→{d2.upper()}"
+    bank_name = bank.capitalize()
+    if ttl_raw == "day":
+        ttl_min = 180
+        ttl_text = "в течение дня"
+    else:
+        ttl_min = int(ttl_raw)
+        ttl_text = f"{ttl_min} минут" if ttl_min < 60 else f"{ttl_min//60} час"
+    text = f"{direction}\nБанк: {bank_name}\nВремя исполнения: {ttl_text}"
+    await call.answer("Заявка создана!")
+    await broadcast(text, ttl_min)
+
+@router.callback_query(F.data == "manual_start")
+async def cb_manual_start(call: CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="RUB→USDT", callback_data="dir_rub_usdt")
+    kb.button(text="USDT→RUB", callback_data="dir_usdt_rub")
+    kb.adjust(2)
+    await call.message.edit_text("Выберите направление:", reply_markup=kb.as_markup())
+    await state.set_state(NewRequest.direction)
+
+@router.callback_query(F.data.startswith("dir_"), NewRequest.direction)
+async def cb_direction(call: CallbackQuery, state: FSMContext):
+    direction = call.data.replace("dir_", "").replace("_", "→").upper()
+    await state.update_data(direction=direction)
+
+    kb = InlineKeyboardBuilder()
+    for bank in ["Сбер", "Альфа", "Тинькофф", "СБП"]:
+        kb.button(text=bank, callback_data=f"bank_{bank.lower()}")
+    kb.adjust(2)
+    await call.message.edit_text("Выберите банк:", reply_markup=kb.as_markup())
+    await state.set_state(NewRequest.bank)
+
+@router.callback_query(F.data.startswith("bank_"), NewRequest.bank)
+async def cb_bank(call: CallbackQuery, state: FSMContext):
+    bank = call.data.replace("bank_", "").capitalize()
+    await state.update_data(bank=bank)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="20 минут", callback_data="ttl_20")
+    kb.button(text="1 час", callback_data="ttl_60")
+    kb.button(text="В течение дня", callback_data="ttl_day")
+    kb.adjust(1)
+    await call.message.edit_text("Выберите время исполнения:", reply_markup=kb.as_markup())
+    await state.set_state(NewRequest.ttl)
+
+@router.callback_query(F.data.startswith("ttl_"), NewRequest.ttl)
+async def cb_ttl(call: CallbackQuery, state: FSMContext):
+    ttl_raw = call.data.replace("ttl_", "")
+    if ttl_raw == "day":
+        ttl_min = 180
+        ttl_text = "в течение дня"
+    else:
+        ttl_min = int(ttl_raw)
+        ttl_text = f"{ttl_min} минут" if ttl_min < 60 else f"{ttl_min//60} час"
+    await state.update_data(ttl_min=ttl_min, ttl_text=ttl_text)
+    data = await state.get_data()
+    text = f"{data['direction']}\nБанк: {data['bank']}\nВремя исполнения: {ttl_text}"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Отправить заявку", callback_data="send_request")
+    kb.button(text="❌ Отмена", callback_data="cancel_request")
+    kb.adjust(1)
+    await call.message.edit_text(f"Подтверждаете заявку?\n\n{text}", reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "send_request", NewRequest.ttl)
+async def cb_send_request(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await call.answer("Заявка отправлена!")
+    await broadcast(f"{data['direction']}\nБанк: {data['bank']}\nВремя исполнения: {data['ttl_text']}", data['ttl_min'])
+    await state.clear()
+
+@router.callback_query(F.data == "cancel_request", NewRequest.ttl)
+async def cb_cancel_request(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text("❌ Заявка отменена.")
+
+# ===============================
+# Команды /start, /help, /register, /unregister, /list, /broadcast
+# ===============================
+
+@router.message(Command("start", "help"))
+async def cmd_start(message: Message):
+    role = "админ" if message.from_user.id in admins else "пользователь"
+    await message.answer(f"Привет! Ты {role}.\n\nДоступные команды:\n"
+                         "/register — добавить чат\n"
+                         "/unregister — убрать чат\n"
+                         "/list — список чатов\n"
+                         "/broadcast <TTL> <текст>\n"
+                         "/new — создать заявку кнопками")
+
+@router.message(Command("register"))
+async def cmd_register(message: Message):
+    if message.from_user.id not in admins:
+        return await message.answer("⛔ Только админ может регистрировать чаты.")
+    chat_id = message.chat.id
+    if chat_id not in state["chats"]:
+        state["chats"].append(chat_id)
+        save_state()
+        await message.answer(f"Чат {chat_id} зарегистрирован.")
+    else:
+        await message.answer("Чат уже в списке.")
+
+@router.message(Command("unregister"))
+async def cmd_unregister(message: Message):
+    if message.from_user.id not in admins:
+        return await message.answer("⛔ Только админ может убирать чаты.")
+    chat_id = message.chat.id
+    if chat_id in state["chats"]:
+        state["chats"].remove(chat_id)
+        save_state()
+        await message.answer(f"Чат {chat_id} удалён.")
+    else:
+        await message.answer("Чат не найден.")
+
+@router.message(Command("list"))
+async def cmd_list(message: Message):
+    if not state["chats"]:
+        return await message.answer("Список чатов пуст.")
+    text = "Подключенные чаты:\n" + "\n".join(str(c) for c in state["chats"])
+    await message.answer(text)
+
+@router.message(Command("broadcast"))
+async def cmd_broadcast(message: Message):
+    if message.from_user.id not in admins:
+        return await message.answer("⛔ Только админ может рассылать заявки.")
+    args = message.text.split(maxsplit=2)
+    if len(args) < 2:
+        return await message.answer("Использование: /broadcast <TTL> <текст>")
+    ttl = parse_ttl(args[1])
+    text = args[2] if len(args) > 2 else ""
+    result = await broadcast(text, ttl)
+    await message.answer(result)
+
+# ===============================
+# Кнопки заявок (взять/снять/исполнено)
+# ===============================
+
+@router.callback_query(F.data.startswith("take_"))
+async def cb_take(call: CallbackQuery):
+    bid = call.data.replace("take_", "")
+    b = next((x for x in state["broadcasts"] if x["id"] == bid), None)
+    if not b or b.get("executor") or b.get("expired"):
+        return await call.answer("Уже занято или истекло.", show_alert=True)
+    user = call.from_user
+    name = user.full_name or user.username or str(user.id)
+    b["executor"] = name
+    save_state()
+    await update_broadcast_messages(b)
+    await call.answer("Вы взяли заявку!")
+
+@router.callback_query(F.data.startswith("drop_"))
+async def cb_drop(call: CallbackQuery):
+    bid = call.data.replace("drop_", "")
+    b = next((x for x in state["broadcasts"] if x["id"] == bid), None)
+    if not b or not b.get("executor"):
+        return await call.answer("Заявка не взята.", show_alert=True)
+    user = call.from_user
+    name = user.full_name or user.username or str(user.id)
+    if name != b["executor"] and user.id not in admins:
+        return await call.answer("Снять может только исполнитель или админ.", show_alert=True)
+    b["executor"] = None
+    save_state()
+    await update_broadcast_messages(b)
+    await call.answer("Заявка снова свободна.")
+
+@router.callback_query(F.data.startswith("done_"))
+async def cb_done(call: CallbackQuery):
+    bid = call.data.replace("done_", "")
+    b = next((x for x in state["broadcasts"] if x["id"] == bid), None)
+    if not b or not b.get("executor"):
+        return await call.answer("Заявка не взята.", show_alert=True)
+    user = call.from_user
+    name = user.full_name or user.username or str(user.id)
+    if name != b["executor"] and user.id not in admins:
+        return await call.answer("Отметить исполненной может только исполнитель или админ.", show_alert=True)
+    b["done"] = True
+    save_state()
+    await update_broadcast_messages(b)
+    await call.answer("Заявка исполнена!")
+
+# ===============================
+# Main
+# ===============================
+
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
