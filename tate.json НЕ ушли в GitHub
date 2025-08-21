@@ -1,0 +1,11 @@
+[0;1;32m●[0m tg-broadcast.service - Telegram Broadcast Bot
+     Loaded: loaded (]8;;file://5507567-dz92196/etc/systemd/system/tg-broadcast.service/etc/systemd/system/tg-broadcast.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Thu 2025-08-21 12:42:55 MSK; 25ms ago
+   Main PID: 1673 ((python))
+      Tasks: 1 (limit: 2298)
+     Memory: 1.0M (peak: 1.2M)
+        CPU: 3ms
+     CGroup: /system.slice/tg-broadcast.service
+             └─[0;38;5;245m1673 "(python)"[0m
+
+Aug 21 12:42:55 5507567-dz92196 systemd[1]: Started tg-broadcast.service - Telegram Broadcast Bot.

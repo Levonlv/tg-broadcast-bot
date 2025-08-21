@@ -1,0 +1,20 @@
+[0;1;32m●[0m tg-broadcast.service - Telegram Broadcast Bot
+     Loaded: loaded (]8;;file://5507567-dz92196/etc/systemd/system/tg-broadcast.service/etc/systemd/system/tg-broadcast.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Thu 2025-08-21 12:42:55 MSK; 1h 24min ago
+   Main PID: 1673 (python)
+      Tasks: 2 (limit: 2298)
+     Memory: 28.8M (peak: 29.0M)
+        CPU: 2.160s
+     CGroup: /system.slice/tg-broadcast.service
+             └─[0;38;5;245m1673 /opt/tg-broadcast/venv/bin/python /opt/tg-broadcast/broadcast_bot.py[0m
+
+Aug 21 13:29:53 5507567-dz92196 python[1673]:     await coroutine
+Aug 21 13:29:53 5507567-dz92196 python[1673]:   File "/opt/tg-broadcast/venv/lib/python3.12/site-packages/telegram/ext/_basehandler.py", line 153, in handle_update
+Aug 21 13:29:53 5507567-dz92196 python[1673]:     return await self.callback(update, context)
+Aug 21 13:29:53 5507567-dz92196 python[1673]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Aug 21 13:29:53 5507567-dz92196 python[1673]:   File "/opt/tg-broadcast/broadcast_bot.py", line 123, in broadcast
+Aug 21 13:29:53 5507567-dz92196 python[1673]:     await schedule_expiration(context, bid, ttl_min)
+Aug 21 13:29:53 5507567-dz92196 python[1673]:   File "/opt/tg-broadcast/broadcast_bot.py", line 127, in schedule_expiration
+Aug 21 13:29:53 5507567-dz92196 python[1673]:     context.job_queue.run_once(expire_job, when=timedelta(minutes=ttl_min), data={"bid": bid}, name=f"expire:{bid}")
+Aug 21 13:29:53 5507567-dz92196 python[1673]:     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+Aug 21 13:29:53 5507567-dz92196 python[1673]: AttributeError: 'NoneType' object has no attribute 'run_once'
