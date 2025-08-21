@@ -1,8 +1,6 @@
-.env
-state.json
-*.log
 __pycache__/
 *.pyc
+env/
 venv/
-.venv/
-.DS_Store
+*.pickle
+.env
