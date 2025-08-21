@@ -1,0 +1,22 @@
+name: Deploy bot to server
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: BOT_TOKEN,ADMIN_IDS,DEFAULT_TTL_MIN
+          script: |
+            export BOT_TOKEN='${{ secrets.BOT_TOKEN }}'
+            export ADMIN_IDS='${{ secrets.ADMIN_IDS }}'
+            export DEFAULT_TTL_MIN='${{ secrets.DEFAULT_TTL_MIN }}'
+            bash /opt/tg-broadcast/deploy.sh
