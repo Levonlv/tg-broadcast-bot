@@ -1,22 +1,24 @@
-#!/bin/bash
-set -e
+name: Deploy bot to server
 
-APP_DIR="/opt/tg-broadcast-bot"
-SERVICE_NAME="tg-broadcast"
+on:
+  push:
+    branches: [ "main" ]
 
-echo "===== Deploy start ====="
-cd $APP_DIR
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-# Подтягиваем изменения
-git fetch origin main
-git reset --hard origin/main
-
-# Устанавливаем зависимости (на всякий случай)
-pip3 install -r requirements.txt --upgrade
-
-# Перезапускаем systemd сервис
-systemctl daemon-reload
-systemctl restart $SERVICE_NAME
-
-echo "===== Deploy finished ====="
-systemctl status $SERVICE_NAME --no-pager -l
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            export BOT_TOKEN='${{ secrets.BOT_TOKEN }}'
+            export ADMIN_IDS='${{ secrets.ADMIN_IDS }}'
+            export DEFAULT_TTL_MIN='${{ secrets.DEFAULT_TTL_MIN }}'
+            bash /opt/tg-broadcast/deploy.sh
