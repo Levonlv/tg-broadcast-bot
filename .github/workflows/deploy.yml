@@ -22,6 +22,7 @@ jobs:
             set -euo pipefail
             bash /opt/tg-broadcast/deploy.sh
             systemctl daemon-reload || true
-            systemctl restart tg-broadcast.service
+            systemctl restart tg-broadcast.service || true
             sleep 2
-            systemctl status --no-pager t
+            systemctl status tg-broadcast.service --no-pager || true
+            journalctl -u tg-broadcast.service -n 100 --no-pager || true
