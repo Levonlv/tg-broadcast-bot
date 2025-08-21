@@ -20,13 +20,20 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
-DEFAULT_TTL_MIN = int(os.getenv("DEFAULT_TTL_MIN", "30"))
-STATE_FILE = os.getenv("STATE_FILE", "state.json")
+def getenv_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    try:
+        return int(val) if val and val.strip() else default
+    except (ValueError, TypeError):
+        return default
 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required!")
+
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+DEFAULT_TTL_MIN = getenv_int("DEFAULT_TTL_MIN", 30)
+STATE_FILE = os.getenv("STATE_FILE", "state.json")
 
 bot = Bot(BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
@@ -114,7 +121,7 @@ async def expire_broadcast(b: dict):
 
 async def broadcast(text: str, ttl_min: int):
     if not state["chats"]:
-        return
+        return "⛔ Нет подключённых чатов. Сначала используйте /register."
     bid = gen_id()
     expire_at = (datetime.utcnow() + timedelta(minutes=ttl_min)).isoformat()
     b = {
