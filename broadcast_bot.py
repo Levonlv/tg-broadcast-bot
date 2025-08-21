@@ -44,9 +44,20 @@ def fmt_deadline(created_at_iso: str, ttl_min: int) -> str:
 
 def render_message(bid: str, state: Dict[str, Any]) -> str:
     bc = state["broadcasts"][bid]
-    status = "🔴 Статус: истёк срок" if bc.get("expired") else ("🟡 Статус: взята — " + bc["claimed_by"]["name"] if bc.get("claimed_by") else "🟢 Статус: свободна")
+    status = (
+        "🔴 Статус: истёк срок"
+        if bc.get("expired")
+        else ("🟡 Статус: взята — " + bc["claimed_by"]["name"] if bc.get("claimed_by") else "🟢 Статус: свободна")
+    )
     deadline = fmt_deadline(bc["created_at"], bc["ttl_min"])
-    return f"📣 <b>Заявка #{short_id(bid)}</b>\n{bc['text']}\n\n⏳ Актуально до: <b>{deadline}</b> (≈{bc['ttl_min']} мин)\n{status}"
+    body = escape(bc["text"])  # важно: экранируем пользовательский текст, т.к. parse_mode=HTML
+    return (
+        f"📣 <b>Заявка #{short_id(bid)}</b>\n"
+        f"{body}\n\n"
+        f"⏳ Актуально до: <b>{deadline}</b> (≈{bc['ttl_min']} мин)\n"
+        f"{status}"
+    )
+
 
 def parse_broadcast_args(raw: str):
     raw = raw.strip()
@@ -61,18 +72,20 @@ def parse_broadcast_args(raw: str):
     return (ttl or DEFAULT_TTL_MIN), raw
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state(); role = "админ" if is_admin(update.effective_user.id, state) else "пользователь"
+    state = load_state()
+    role = "админ" if is_admin(update.effective_user.id, state) else "пользователь"
     await update.message.reply_text(
         "Привет! Я бот для широковещательных заявок партнёрам.\n\n"
         "Команды:\n"
         "/register — зарегистрировать текущий чат как целевой\n"
         "/unregister — убрать текущий чат\n"
         "/list — показать все чаты\n"
-        "/broadcast <TTL мин> <текст> — разослать заявку (только админы)\n"
+        "<code>/broadcast &lt;TTL мин&gt; &lt;текст&gt;</code> — разослать заявку (только админы)\n"
         "/help — справка\n\n"
         f"Ваш статус: {role}",
         parse_mode=constants.ParseMode.HTML
     )
+
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE): await start(update, context)
 
