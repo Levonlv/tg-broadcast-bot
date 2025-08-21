@@ -15,9 +15,8 @@ jobs:
         run: |
           printf '%s\n' "${{ secrets.SERVER_SSH_KEY }}" > key.pem
           chmod 600 key.pem
-          # вывести отпечаток приватного ключа
           ssh-keygen -yf key.pem | ssh-keygen -lf -
-      
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -31,4 +30,3 @@ jobs:
             export ADMIN_IDS='${{ secrets.ADMIN_IDS }}'
             export DEFAULT_TTL_MIN='${{ secrets.DEFAULT_TTL_MIN }}'
             bash /opt/tg-broadcast/deploy.sh
-
