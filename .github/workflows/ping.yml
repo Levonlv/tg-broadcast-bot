@@ -1,0 +1,19 @@
+name: SSH ping
+
+on:
+  workflow_dispatch: {}   # запуск вручную
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH test: whoami, hostname, ls
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            whoami
+            hostname
+            ls -la /opt/tg-broadcast
